@@ -35,11 +35,19 @@ class Node:
         self.transactions = {}  # Dictionary of processed transactions
         self.running = True  # Flag to keep the node running
         self.transaction_counter = 0  # Counter for transaction IDs
-        
+
+        # Validate the IP address
+        host, port = self.address.split(":")
+        try:
+            socket.inet_aton(host)  # Check if the IP address is valid
+        except socket.error:
+            raise ValueError(f"Invalid IP address: {host}")
+
         # Create a single UDP socket for both sending and receiving
         self.udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.udp_socket.bind((self.address.split(":")[0], int(self.address.split(":")[1])))
+        self.udp_socket.bind((host, int(port)))  # Bind to the specified IP and port
         print(f"Node {self.nickname} listening on {self.address} (UDP)")
+
 
 
     def process_transaction(self, txn):
@@ -83,6 +91,9 @@ class Node:
 
     def send_udp_message(self, message, peer_address):
         """Send a UDP message to a peer using the node's single socket."""
+        if not peer_address or ":" not in peer_address:
+            print(f"\nInvalid peer address: {peer_address}")
+            return
         try:
             peer_host, peer_port = peer_address.split(":")
             self.udp_socket.sendto(message.encode("utf-8"), (peer_host, int(peer_port)))
@@ -102,14 +113,10 @@ class Node:
             except Exception as e:
                 print(f"\nError in listening loop: {e}")
 
-
-
     def handle_udp_message(self, data, addr):
         """Handle incoming UDP messages."""
         try:
             message = json.loads(data.decode("utf-8"))
-
-            # Always resolve the sender's address using its original port
             sender_address = f"{addr[0]}:{addr[1]}"
 
             if message["type"] == "transaction":
@@ -138,59 +145,83 @@ class Node:
                 print(f"- Balance: {details['balance']}")
                 print(f"- Connected Peers: {', '.join(details['peers']) if details['peers'] else 'None'}")
                 self.add_peer(details["address"])
+
+            elif message["type"] == "discovery_request":
+                self.handle_discovery_request(sender_address)
+
+            elif message["type"] == "discovery_response":
+                self.handle_discovery_response(message, sender_address)
+
+            elif message["type"] == "advertise":
+                advertised_address = message.get("address")
+                if advertised_address:
+                    print(f"\nNode advertised itself: {advertised_address}")
+                    self.add_peer(advertised_address)
+
             else:
                 print(f"\nUnknown message type received from {addr}: {message}")
 
         except Exception as e:
             print(f"\nError handling message from {addr}: {e}")
 
+    def advertise_presence(self):
+        """Advertise this node's presence to connected peers."""
+        if not self.peers:
+            print("\nNo peers to advertise presence to.")
+            return
+
+        print("\nAdvertising presence to peers...")
+        for peer in self.peers:
+            try:
+                message = json.dumps({"type": "advertise", "address": self.address})
+                self.send_udp_message(message, peer)
+            except Exception as e:
+                print(f"\nError advertising presence to {peer}: {e}")
+
+    def request_discovery(self):
+        """Request discovery of other nodes from connected peers."""
+        if not self.peers:
+            print("\nNo peers to request discovery from.")
+            return
+
+        print("\nRequesting discovery from peers...")
+        for peer in self.peers:
+            try:
+                message = json.dumps({"type": "discovery_request"})
+                self.send_udp_message(message, peer)
+            except Exception as e:
+                print(f"\nError sending discovery request to {peer}: {e}")
+
+    def handle_discovery_request(self, sender_address):
+        """Handle a discovery request and send a response with known peers."""
+        print(f"\nDiscovery request received from {sender_address}")
+        self.add_peer(sender_address)
+        response = {"type": "discovery_response", "peers": self.peers}
+        self.send_udp_message(json.dumps(response), sender_address)
+
+    def handle_discovery_response(self, data, sender_address):
+        """Handle a discovery response and update the peer list."""
+        print(f"\nDiscovery response received from {sender_address}")
+        new_peers = data.get("peers", [])
+        for peer in new_peers:
+            self.add_peer(peer)
+
     def add_peer(self, peer_address):
         """Add a peer to the peers list if not already present and validate address."""
-        # Regex to match IP:PORT format
         if not re.match(r"^\d{1,3}(\.\d{1,3}){3}:\d+$", peer_address):
             print("\nInvalid address format. Please use IP:PORT format (e.g., 127.0.0.1:5001).")
             return
-        
+
         if peer_address not in self.peers and peer_address != self.address:
             self.peers.append(peer_address)
             print(f"\nNode {peer_address} added to peers list.")
 
-
-    def send_node_details(self, requester_addr):
-        """Send this node's details back to the requester."""
-        details = {
-            "nickname": self.nickname,
-            "address": self.address,
-            "balance": self.balance,
-            "peers": self.peers,
-        }
-        message = json.dumps({"type": "details_response", "data": details})
-        self.send_udp_message(message, requester_addr)
-        print(f"\nNode details sent to {requester_addr}")
-
-    def ping_all(self):
-        """Ping all connected peers."""
-        if not self.peers:
-            print("\nNo peers to ping.")
-            return
-
-        print("\nPinging all peers...")
-        for peer in self.peers[:]:  # Iterate over a copy of the list to safely modify it
-            try:
-                message = json.dumps({"type": "ping", "data": f"Hello from {self.nickname}"})
-                self.send_udp_message(message, peer)
-                print(f"Ping sent to {peer}")
-            except Exception as e:
-                print(f"\nError pinging {peer}: {e}")
-                if peer in self.peers:
-                    self.peers.remove(peer)
-
     def stop(self):
         """Stop the node."""
         self.running = False
+        self.udp_socket.close()
 
 
-# Helper functions
 def print_menu():
     """Print the Node menu."""
     print("\n=== Node Menu ===")
@@ -200,15 +231,18 @@ def print_menu():
     print("4. List Transactions")
     print("5. Send Ping")
     print("6. Get Node Details")
-    print("7. Ping All")
+    print("7. Request Discovery")
     print("8. Exit")
 
 
-def start_node(port):
+def start_node(port, ip="0.0.0.0"):
+    """Start the node."""
     nickname = f"Node-{port}"
-    address = f"127.0.0.1:{port}"
+    address = f"{ip}:{port}"
     node = Node(nickname, address)
     threading.Thread(target=node.listen, daemon=True).start()
+
+    node.advertise_presence()
 
     while True:
         print_menu()
@@ -222,7 +256,7 @@ def start_node(port):
                 for peer in node.peers:
                     print(f"- {peer}")
         elif choice == "2":
-            peer = input("Enter peer address (e.g., 127.0.0.1:5001): ")
+            peer = input("Enter peer address (e.g., 192.168.1.100:5001): ")
             node.add_peer(peer)
         elif choice == "3":
             receiver = input("Enter receiver address: ")
@@ -241,17 +275,18 @@ def start_node(port):
             peer = input("Enter peer address to request details: ")
             node.send_udp_message(json.dumps({"type": "details_request"}), peer)
         elif choice == "7":
-            node.ping_all()
+            node.request_discovery()
         elif choice == "8":
             node.stop()
             sys.exit(0)
         else:
             print("Invalid choice. Try again.")
 
-
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        print("Usage: python node.py <port>")
+    if len(sys.argv) < 2:
+        print("Usage: python node.py <port> [<ip>]")
         sys.exit(1)
 
-    start_node(int(sys.argv[1]))
+    port = int(sys.argv[1])
+    ip = sys.argv[2] if len(sys.argv) > 2 else "0.0.0.0"  # Default to bind to all interfaces
+    start_node(port, ip)
