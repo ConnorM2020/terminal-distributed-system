@@ -150,10 +150,22 @@ class Node:
                 print(f"Transaction {txn.id} synchronized from {sender_address}.")
 
     def join_network(self, peer_address):
-        """Join the network via a known peer."""
+        """Join the network via a known peer and propagate peer discovery."""
+        print(f"\nJoining network via {peer_address}...")
         self.add_peer(peer_address)
+
+        # Step 1: Request discovery from the initial peer
         self.request_discovery()
+
+        # Step 2: Synchronize transactions with the initial peer
         self.synchronize_indexes()
+
+        # Step 3: Recursively discover peers from all new peers
+        for peer in self.peers:
+            if peer != peer_address:  # Skip the initial peer, as it's already handled
+                print(f"\nRequesting discovery from {peer}...")
+                self.send_udp_message("discovery_request", {}, peer)
+
 
     def listen(self):
         """Start listening for UDP messages using the node's existing socket."""
@@ -235,11 +247,19 @@ class Node:
         self.send_udp_message("discovery_response", response, sender_address)
 
     def handle_discovery_response(self, data, sender_address):
-        """Handle a discovery response and update the peer list."""
+        """Handle a discovery response and connect to new peers."""
+        print(f"\nDiscovery response received from {sender_address}")
         new_peers = data.get("peers", [])
         for peer in new_peers:
             if peer not in self.peers and peer != self.address:
                 self.add_peer(peer)
+
+        # Step 4: Request discovery from newly added peers
+        for peer in new_peers:
+            if peer != sender_address:  # Avoid re-sending to the same peer
+                print(f"\nPropagating discovery request to {peer}...")
+                self.send_udp_message("discovery_request", {}, peer)
+
 
     def stop(self):
         """Stop the node."""
