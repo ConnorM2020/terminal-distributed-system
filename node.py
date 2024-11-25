@@ -116,6 +116,7 @@ class Node:
             if peer_address in self.peers:
                 self.peers.remove(peer_address)
 
+
     def request_balance(self, peer_address):
         """Request the balance from a peer."""
         self.send_udp_message("balance_request", {}, peer_address)
@@ -128,6 +129,99 @@ class Node:
         """Handle a balance response."""
         balance = data.get("balance")
         print(f"\nBalance of {sender_address}: {balance}")
+
+    def synchronize_indexes(self):
+        """Request transaction indexes from all peers and synchronize."""
+        for peer in self.peers:
+            self.send_udp_message("sync_request", {}, peer)
+
+    def handle_sync_request(self, sender_address):
+        """Respond to a synchronization request with local transactions."""
+        response = {"transactions": [txn.to_dict() for txn in self.transactions.values()]}
+        self.send_udp_message("sync_response", response, sender_address)
+
+    def handle_sync_response(self, data, sender_address):
+        """Merge transactions received from a sync response."""
+        new_transactions = data.get("transactions", [])
+        for txn_data in new_transactions:
+            txn = Transaction(**txn_data)
+            if txn.id not in self.transactions:
+                self.transactions[txn.id] = txn
+                print(f"Transaction {txn.id} synchronized from {sender_address}.")
+
+    def join_network(self, peer_address):
+        """Join the network via a known peer."""
+        self.add_peer(peer_address)
+        self.request_discovery()
+        self.synchronize_indexes()
+
+    def listen(self):
+        """Start listening for UDP messages using the node's existing socket."""
+        while self.running:
+            try:
+                data, addr = self.udp_socket.recvfrom(1024)
+                threading.Thread(target=self.handle_udp_message, args=(data, addr)).start()
+            except ConnectionResetError:
+                print("\nConnection reset by remote host. Ignoring and continuing to listen.")
+            except Exception as e:
+                print(f"\nError in listening loop: {e}")
+
+    def handle_udp_message(self, data, addr):
+        """Handle incoming UDP messages."""
+        try:
+            # Decode the received message
+            message = json.loads(data.decode("utf-8"))
+            sender_address = f"{addr[0]}:{addr[1]}"
+            message_type = message.get("type")
+
+            print(f"\nReceived message of type '{message_type}' from {sender_address}")
+
+            # Handle message types
+            if message_type == "transaction":
+                txn_data = message.get("data", {})
+                txn = Transaction(**txn_data)
+                success, msg = self.process_transaction(txn)
+                if success:
+                    print(f"\nTransaction processed successfully:")
+                    print(f"- {txn.to_dict()}")
+                    # Broadcast transaction to others
+                    self.broadcast_transaction(txn)
+            elif message_type == "sync_request":
+                self.handle_sync_request(sender_address)
+            elif message_type == "sync_response":
+                self.handle_sync_response(message.get("data", {}), sender_address)
+            elif message_type == "balance_request":
+                self.handle_balance_request(sender_address)
+            elif message_type == "balance_response":
+                self.handle_balance_response(message.get("data", {}), sender_address)
+            elif message_type == "ping":
+                self.add_peer(sender_address)
+            elif message_type == "details_request":
+                self.send_node_details(sender_address)
+            elif message_type == "discovery_request":
+                self.handle_discovery_request(sender_address)
+            elif message_type == "discovery_response":
+                self.handle_discovery_response(message.get("data", {}), sender_address)
+        except json.JSONDecodeError:
+            print(f"\nError decoding message from {addr}: {data}")
+        except Exception as e:
+            print(f"\nUnexpected error handling message from {addr}: {e}")
+
+    def add_peer(self, peer_address):
+        """Add a peer to the peers list if not already present."""
+        if peer_address not in self.peers and peer_address != self.address:
+            self.peers.append(peer_address)
+            print(f"\nNode {peer_address} added to peers list.")
+
+    def send_node_details(self, peer_address):
+        """Send this node's details to a requesting peer."""
+        details = {
+            "nickname": self.nickname,
+            "address": self.address,
+            "balance": self.balance,
+            "peers": self.peers,
+        }
+        self.send_udp_message("details_response", details, peer_address)
 
     def request_discovery(self):
         """Request discovery of other nodes from connected peers."""
@@ -146,16 +240,6 @@ class Node:
         for peer in new_peers:
             if peer not in self.peers and peer != self.address:
                 self.add_peer(peer)
-
-    def add_peer(self, peer_address):
-        """Add a peer to the peers list if not already present."""
-        if not re.match(r"^\d{1,3}(\.\d{1,3}){3}:\d+$", peer_address):
-            print("\nInvalid address format. Use IP:PORT (e.g., 192.168.1.100:5001).")
-            return
-
-        if peer_address not in self.peers and peer_address != self.address:
-            self.peers.append(peer_address)
-            print(f"\nNode {peer_address} added to peers list.")
 
     def stop(self):
         """Stop the node."""
@@ -222,7 +306,7 @@ def start_node(port, ip="0.0.0.0"):
             node.synchronize_indexes()
         elif choice == "9":
             peer = input("Enter peer address to join the network: ")
-            node.add_peer(peer)
+            node.join_network(peer)
         elif choice == "10":
             peer = input("Enter peer address to request balance: ")
             node.request_balance(peer)
@@ -231,6 +315,7 @@ def start_node(port, ip="0.0.0.0"):
             sys.exit(0)
         else:
             print("Invalid choice. Try again.")
+            
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("Usage: python node.py <port> [<ip>]")
