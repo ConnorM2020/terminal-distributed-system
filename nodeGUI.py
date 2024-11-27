@@ -15,7 +15,7 @@ class NodeGUI:
         self.setup_gui()
         self.node = Node(self.node_name, f"{ip}:{port}", log_callback=self.log_message)
         threading.Thread(target=self.node.listen, daemon=True).start()
-
+    
     def setup_gui(self):
         # Display Node Name
         tk.Label(self.master, text=f"Node: {self.node_name}", font=("Arial", 16)).pack(pady=10)
@@ -30,12 +30,13 @@ class NodeGUI:
         tk.Button(peer_frame, text="Join Network", command=self.join_network).pack(side="left", padx=5, pady=5)
 
         # Frame for transaction management
-        txn_frame = tk.LabelFrame(self.master, text="Transactions", padx=5, pady=5)
+        txn_frame = tk.LabelFrame(self.master, text="Transactions", padx=5, pady=5)  # Initialize txn_frame
         txn_frame.pack(fill="x", padx=10, pady=5)
 
         tk.Button(txn_frame, text="Send Transaction", command=self.send_transaction).pack(side="left", padx=5, pady=5)
         tk.Button(txn_frame, text="List Transactions", command=self.list_transactions).pack(side="left", padx=5, pady=5)
         tk.Button(txn_frame, text="Synchronize Transactions", command=self.synchronize_transactions).pack(side="left", padx=5, pady=5)
+        tk.Button(txn_frame, text="Query Transactions", command=self.query_transactions).pack(side="left", padx=5, pady=5)  # Ensure it comes after txn_frame initialization
 
         # Frame for communication
         comm_frame = tk.LabelFrame(self.master, text="Communication", padx=5, pady=5)
@@ -58,6 +59,58 @@ class NodeGUI:
 
         self.log_display = scrolledtext.ScrolledText(log_frame, wrap=tk.WORD, height=15)
         self.log_display.pack(fill="both", expand=True)
+    
+    def query_transactions(self, sender=None, receiver=None, min_amount=None, max_amount=None):
+            results = []
+            for txn in self.transactions.values():
+                if sender and txn.sender != sender:
+                    continue
+                if receiver and txn.receiver != receiver:
+                    continue
+                if min_amount and txn.amount < min_amount:
+                    continue
+                if max_amount and txn.amount > max_amount:
+                    continue
+                results.append(txn.to_dict())
+            return results
+    
+    def query_transactions(self):
+        # Get query parameters from the user
+        sender = simpledialog.askstring("Query Transactions", "Enter sender address (optional):")
+        receiver = simpledialog.askstring("Query Transactions", "Enter receiver address (optional):")
+        min_amount = simpledialog.askfloat("Query Transactions", "Enter minimum amount (optional):")
+        max_amount = simpledialog.askfloat("Query Transactions", "Enter maximum amount (optional):")
+
+        # Perform the query
+        results = self.node.query_transactions(sender=sender, receiver=receiver, min_amount=min_amount, max_amount=max_amount)
+        
+        # Format the results nicely
+        if results:
+            formatted_results = "\n".join([
+                f"Transaction ID: {txn['id']}\n"
+                f"Amount: {txn['amount']}\n"
+                f"Sender: {txn['sender']}\n"
+                f"Receiver: {txn['receiver']}\n"
+                f"Timestamp: {txn['timestamp']}\n"
+                "-----------------------------------"
+                for txn in results
+            ])
+        else:
+            formatted_results = "No transactions match the query."
+
+        # Display results in a popup
+        self.show_query_results(formatted_results)
+    
+    def show_query_results(self, formatted_results):
+        result_window = tk.Toplevel(self.master)
+        result_window.title("Query Results")
+        
+        result_text = scrolledtext.ScrolledText(result_window, wrap=tk.WORD, height=15, width=60)
+        result_text.pack(fill="both", expand=True)
+        
+        result_text.insert(tk.END, formatted_results)
+        result_text.config(state="disabled")
+
 
     def log_message(self, message):
         """Display messages in the log area."""
@@ -103,7 +156,7 @@ class NodeGUI:
     def synchronize_transactions(self):
         self.node.synchronize_transactions()
         self.log_message("Synchronized transactions with peers.")
-        
+
     def toggle_failure_simulation(self):
         self.node.failure_simulation = not self.node.failure_simulation
         status = "enabled" if self.node.failure_simulation else "disabled"
