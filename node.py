@@ -44,6 +44,7 @@ class Node:
         self.log_callback = log_callback
         self.failure_simulation = False  # Simulate failures (True to enable)
         self.drop_probability = 0.3     # 30% chance of dropping messages
+        self.processed_transaction_ids = set()
 
         # Validate IP Address
         host, port = self.address.split(":")
@@ -86,9 +87,9 @@ class Node:
     def process_transaction(self, txn):
         if txn.id in self.transactions:
             return False, "Transaction already processed."
-        # Add transaction to local storage
+        # Add transaction to the set of processed IDs
+        self.processed_transaction_ids.add(txn.id)
         self.transactions[txn.id] = txn
-
         if txn.receiver == self.address:
             self.balance += txn.amount
             return True, "Transaction received and balance updated."
@@ -106,13 +107,11 @@ class Node:
         if receiver_address not in self.peers:
             self.log("Error", f"Cannot send transaction: {receiver_address} is not a peer.")
             return
-    
-        
         if self.balance < amount:
             self.log("Error", "Insufficient balance to send transaction.")
             return
-
-        txn_id = f"txn-{self.transaction_counter}"
+        
+        txn_id = f"txn-{self.address}-{self.transaction_counter}"  # Unique ID per node
         self.transaction_counter += 1
         timestamp = self.increment_clock()
 
@@ -123,27 +122,29 @@ class Node:
             receiver=receiver_address,
             timestamp=timestamp,
         )
-
         self.balance -= amount
         self.transactions[txn.id] = txn
-        self.log("Transaction", f"Sending to {receiver_address}: {txn.to_dict()}")
-        self.broadcast_transaction(txn)
-
+        # Attempt to broadcast the transaction
+        if self.broadcast_transaction(txn):
+            self.log("Transaction", f"Sending to {receiver_address}: {txn.to_dict()}")
+        else:
+            self.log("Error", f"Failed to send transaction to {receiver_address}")
 
     def broadcast_transaction(self, txn):
+        if not self.peers:
+            self.log("Warning", "No peers available to broadcast the transaction.")
+            return False  # No peers to broadcast to
+
+        success = False
         for peer in self.peers:
-            if peer != txn.sender and peer != txn.receiver:
-                self.log("Broadcast", f"Sending transaction to receiver: {txn.receiver}")
-                self.send_udp_message("transaction", txn.to_dict(), txn.receiver)
-            else:
-                self.log("Error", f"Receiver {txn.receiver} is not in the peer list.")
-            
-            if not self.peers:
-                self.log("Warning", "No peers available to broadcast the transaction.")
-                return
-            for peer in self.peers:
-                self.log("Broadcast", f"Sending transaction to peer: {peer}")
+            try:
                 self.send_udp_message("transaction", txn.to_dict(), peer)
+                self.log("Broadcast", f"Transaction broadcasted to peer: {peer}")
+                success = True
+            except Exception as e:
+                self.log("Error", f"Failed to broadcast transaction to {peer}: {e}")
+
+        return success
 
     def send_ping(self, peer_address):
         # Validate the peer address format
@@ -289,9 +290,13 @@ class Node:
     def merge_transactions(self, peer_transactions):
         for txn_data in peer_transactions:
             txn = Transaction(**txn_data)
-            if txn.id not in self.transactions:
+            if txn.id not in self.processed_transaction_ids:
+                self.processed_transaction_ids.add(txn.id)  # Add ID to processed set
                 self.transactions[txn.id] = txn
-                self.log("Transaction Merged", f"Added transaction {txn.id} from peer")
+                self.log("Transaction Merged", f"Added transaction {txn.id} from peer.")
+            else:
+                self.log("Transaction Skipped", f"Duplicate transaction {txn.id} ignored.")
+
 
     def add_peer(self, peer_address):
         if not re.match(r"^\d{1,3}(\.\d{1,3}){3}:\d+$", peer_address):
