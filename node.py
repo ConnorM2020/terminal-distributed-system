@@ -56,7 +56,7 @@ class Node:
         self.udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.udp_socket.bind((host, int(port)))
         self.log("Node Start", f"{self.nickname} listening on {self.address} (UDP)")
-        
+
     def disconnect(self):
         self.log("Node Disconnection", "Simulating node disconnection.")
         self.running = False
@@ -102,6 +102,11 @@ class Node:
         if receiver_address == self.address:
             self.log("Error", "Cannot send transaction to self.")
             return
+        
+        if receiver_address not in self.peers:
+            self.log("Error", f"Cannot send transaction: {receiver_address} is not a peer.")
+            return
+    
         
         if self.balance < amount:
             self.log("Error", "Insufficient balance to send transaction.")
