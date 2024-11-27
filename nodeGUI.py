@@ -103,6 +103,11 @@ class NodeGUI:
     def synchronize_transactions(self):
         self.node.synchronize_transactions()
         self.log_message("Synchronized transactions with peers.")
+        
+    def toggle_failure_simulation(self):
+        self.node.failure_simulation = not self.node.failure_simulation
+        status = "enabled" if self.node.failure_simulation else "disabled"
+        self.log_message(f"Failure simulation {status}.")
 
     def send_ping(self):
         peer = simpledialog.askstring("Send Ping", "Enter peer address (IP:PORT):")
