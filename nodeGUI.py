@@ -15,7 +15,7 @@ class NodeGUI:
         self.setup_gui()
         self.node = Node(self.node_name, f"{ip}:{port}", log_callback=self.log_message)
         threading.Thread(target=self.node.listen, daemon=True).start()
-    
+
     def setup_gui(self):
         # Display Node Name
         tk.Label(self.master, text=f"Node: {self.node_name}", font=("Arial", 16)).pack(pady=10)
@@ -30,13 +30,13 @@ class NodeGUI:
         tk.Button(peer_frame, text="Join Network", command=self.join_network).pack(side="left", padx=5, pady=5)
 
         # Frame for transaction management
-        txn_frame = tk.LabelFrame(self.master, text="Transactions", padx=5, pady=5)  # Initialize txn_frame
+        txn_frame = tk.LabelFrame(self.master, text="Transactions", padx=5, pady=5)
         txn_frame.pack(fill="x", padx=10, pady=5)
 
         tk.Button(txn_frame, text="Send Transaction", command=self.send_transaction).pack(side="left", padx=5, pady=5)
         tk.Button(txn_frame, text="List Transactions", command=self.list_transactions).pack(side="left", padx=5, pady=5)
         tk.Button(txn_frame, text="Synchronize Transactions", command=self.synchronize_transactions).pack(side="left", padx=5, pady=5)
-        tk.Button(txn_frame, text="Query Transactions", command=self.query_transactions).pack(side="left", padx=5, pady=5)  # Ensure it comes after txn_frame initialization
+        tk.Button(txn_frame, text="Query Transactions", command=self.query_transactions).pack(side="left", padx=5, pady=5)
 
         # Frame for communication
         comm_frame = tk.LabelFrame(self.master, text="Communication", padx=5, pady=5)
@@ -59,8 +59,13 @@ class NodeGUI:
 
         self.log_display = scrolledtext.ScrolledText(log_frame, wrap=tk.WORD, height=15)
         self.log_display.pack(fill="both", expand=True)
+
+        # Add a "Clear Logs" button
+        tk.Button(log_frame, text="Clear Logs", command=self.clear_logs).pack(pady=5)
     
-    def query_transactions(self, sender=None, receiver=None, min_amount=None, max_amount=None):
+   
+    
+    def query_transactions_internal(self, sender=None, receiver=None, min_amount=None, max_amount=None):
             results = []
             for txn in self.transactions.values():
                 if sender and txn.sender != sender:
@@ -74,6 +79,16 @@ class NodeGUI:
                 results.append(txn.to_dict())
             return results
     
+
+    def get_balances(self):
+        return self.balances
+
+    def show_balances(self):
+        balances = self.get_balances()
+        formatted = "\n".join([f"{node}: {balance:.2f}" for node, balance in balances.items()])
+        messagebox.showinfo("Balances", formatted)
+
+
     def query_transactions(self):
         # Get query parameters from the user
         sender = simpledialog.askstring("Query Transactions", "Enter sender address (optional):")
@@ -81,9 +96,9 @@ class NodeGUI:
         min_amount = simpledialog.askfloat("Query Transactions", "Enter minimum amount (optional):")
         max_amount = simpledialog.askfloat("Query Transactions", "Enter maximum amount (optional):")
 
-        # Perform the query
+        # Perform the query using the Node's method
         results = self.node.query_transactions(sender=sender, receiver=receiver, min_amount=min_amount, max_amount=max_amount)
-        
+
         # Format the results nicely
         if results:
             formatted_results = "\n".join([
@@ -93,13 +108,13 @@ class NodeGUI:
                 f"Receiver: {txn['receiver']}\n"
                 f"Timestamp: {txn['timestamp']}\n"
                 "-----------------------------------"
-                for txn in results
-            ])
+                for txn in results])
         else:
             formatted_results = "No transactions match the query."
 
         # Display results in a popup
         self.show_query_results(formatted_results)
+
     
     def show_query_results(self, formatted_results):
         result_window = tk.Toplevel(self.master)
@@ -169,14 +184,25 @@ class NodeGUI:
             self.log_message(f"Ping sent to {peer}")
 
     def get_node_details(self):
+        # Retrieve balances from the Node
+        balances_str = "\n".join([f"{account}: {balance:.2f}" for account, balance in self.node.balances.items()])
+        balances_str = balances_str if balances_str else "No accounts available."
+
+        # Retrieve peers from the Node
+        peers_str = "\n".join(self.node.peers) or "No peers connected."
+
+        # Prepare the details
         details = {
             "Node Name": self.node.nickname,
             "Address": self.node.address,
-            "Balance": self.node.balance,
-            "Peers": "\n".join(self.node.peers) or "No peers connected.",
+            "Balances": balances_str,
+            "Peers": peers_str,
         }
+
+        # Format the details as a message
         details_message = "\n".join([f"{key}: {value}" for key, value in details.items()])
         messagebox.showinfo("Node Details", details_message)
+
 
     def request_balance(self):
         peer = simpledialog.askstring("Request Balance", "Enter peer address (IP:PORT):")
@@ -215,6 +241,11 @@ class NodeGUI:
                 self.node.send_udp_message("balance_request", {}, peer)
                 self.log_message(f"Robot: Requested balance from {peer}")
             time.sleep(random.randint(2, 5))  # Delay between actions
+
+    def clear_logs(self):
+        """Clear the log area."""
+        self.log_display.delete('1.0', tk.END)
+
 
 
 def start_gui(port, ip="0.0.0.0"):

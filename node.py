@@ -6,6 +6,7 @@ import threading
 from datetime import datetime
 import uuid
 import tkinter as tk
+import random
 
 # Utility for formatted logging
 def log_message(message_type, details):
@@ -45,6 +46,7 @@ class Node:
         self.failure_simulation = False  # Simulate failures (True to enable)
         self.drop_probability = 0.3     # 30% chance of dropping messages
         self.processed_transaction_ids = set()
+        self.balances = {self.address: 1000.0}
 
         # Validate IP Address
         host, port = self.address.split(":")
@@ -87,34 +89,58 @@ class Node:
     def process_transaction(self, txn):
         if txn.id in self.transactions:
             return False, "Transaction already processed."
-        # Add transaction to the set of processed IDs
+
+        # Add transaction to the processed set and local transaction log
         self.processed_transaction_ids.add(txn.id)
         self.transactions[txn.id] = txn
-        if txn.receiver == self.address:
-            self.balance += txn.amount
-            return True, "Transaction received and balance updated."
 
-        # Ensure no double processing for senders
-        if txn.sender == self.address:
-            return False, "Transaction already handled as sender."
-        return False, "Transaction not intended for this node."
+        # Update receiver's balance
+        if txn.receiver in self.balances:
+            self.balances[txn.receiver] += txn.amount
+        else:
+            self.balances[txn.receiver] = txn.amount  # Create the account if it doesn't exist
 
+        # Update sender's balance
+        if txn.sender in self.balances:
+            self.balances[txn.sender] -= txn.amount
+            if self.balances[txn.sender] < 0:
+                return False, "Insufficient funds."
+        else:
+            return False, f"Sender account '{txn.sender}' does not exist."
+
+        self.log("Transaction Processed", f"{txn.sender} -> {txn.receiver}: {txn.amount}")
+        self.log("Balances Updated", f"Current Balances: {self.balances}")
+
+        # Synchronize with peers after processing the transaction
+        self.synchronize_transactions()
+
+        return True, "Transaction processed successfully."
+
+    
     def send_transaction(self, receiver_address, amount):
+        # Prevent sending a transaction to self
         if receiver_address == self.address:
             self.log("Error", "Cannot send transaction to self.")
             return
-        
+
+        # Ensure the receiver is a valid peer
         if receiver_address not in self.peers:
             self.log("Error", f"Cannot send transaction: {receiver_address} is not a peer.")
             return
-        if self.balance < amount:
-            self.log("Error", "Insufficient balance to send transaction.")
+
+        # Ensure sufficient funds in the sender's account
+        if self.address not in self.balances or self.balances[self.address] < amount:
+            self.log("Error", "Insufficient balance in the specified account.")
             return
-        
-        txn_id = f"txn-{self.address}-{self.transaction_counter}"  # Unique ID per node
+
+        # Create a unique transaction ID
+        txn_id = f"txn-{self.address}-{self.transaction_counter}"
         self.transaction_counter += 1
+
+        # Increment the Lamport clock
         timestamp = self.increment_clock()
 
+        # Create the transaction object
         txn = Transaction(
             txn_id=txn_id,
             amount=amount,
@@ -122,11 +148,19 @@ class Node:
             receiver=receiver_address,
             timestamp=timestamp,
         )
-        self.balance -= amount
+
+        # Deduct the amount from the sender's balance
+        self.balances[self.address] -= amount
         self.transactions[txn.id] = txn
-        # Attempt to broadcast the transaction
+
+        # Log balance deduction on the sending node
+        self.log("Balance Deducted", f"{self.address}: New Balance: {self.balances[self.address]}")
+
+        # Broadcast the transaction
         if self.broadcast_transaction(txn):
-            self.log("Transaction", f"Sending to {receiver_address}: {txn.to_dict()}")
+            self.log("Transaction Sent", f"{self.address} -> {receiver_address}: {amount}")
+            # Synchronize balances and transactions across the network
+            self.synchronize_transactions()
         else:
             self.log("Error", f"Failed to send transaction to {receiver_address}")
 
@@ -240,37 +274,32 @@ class Node:
                 self.handle_balance_response(balance_data, sender_address)
 
             elif message_type == "sync_request":
-                self.log("Sync Request", f"Received sync request from {sender_address}")
-
-                # Prepare data to send back
+                 # Prepare data to send back
                 sync_data = {
+                    "balances": self.balances,
                     "transactions": self.get_all_transactions(),
                     "peers": self.peers,
-                    "balance": self.balance
                 }
                 self.send_udp_message("sync_response", sync_data, sender_address)
-
-
+                
             elif message_type == "sync_response":
                 self.log("Sync Response", f"Received sync response from {sender_address}")
 
                 # Extract data from the response
                 data = message.get("data", {})
-                peer_transactions = data.get("transactions", [])
-                peer_list = data.get("peers", [])
-                peer_balance = data.get("balance", 0)
+                incoming_balances = data.get("balances", {})
+                incoming_transactions = data.get("transactions", [])
+                incoming_peers = data.get("peers", [])
 
-                # Merge transactions
-                self.log("Sync", f"Merging {len(peer_transactions)} transactions from {sender_address}")
-                self.merge_transactions(peer_transactions)
-                # Merge peers
-                for peer in peer_list:
-                    if peer != self.address:
-                        self.add_peer(peer)
+                # Merge incoming data
+                self.merge_balances(incoming_balances)
+                self.merge_transactions(incoming_transactions)
+                self.merge_peers(incoming_peers)
 
-                # Log the received balance
-                self.log("Sync", f"Node {sender_address} has a balance of {peer_balance}")
-
+                self.log("Sync Complete", "Synchronization completed successfully.")
+                self.log("Balances", f"Updated Balances: {self.balances}")
+                self.log("Peers", f"Updated Peers: {self.peers}")
+                        
             else:
                 # Log unknown message types
                 self.log("Error", f"Unknown message type received from {sender_address}: {message_type}")
@@ -296,6 +325,21 @@ class Node:
                 self.log("Transaction Merged", f"Added transaction {txn.id} from peer.")
             else:
                 self.log("Transaction Skipped", f"Duplicate transaction {txn.id} ignored.")
+    
+    def merge_peers(self, incoming_peers):
+        for peer in incoming_peers:
+            if peer != self.address and peer not in self.peers:
+                self.peers.append(peer)
+                self.log("Peer Added", f"Added peer {peer}")
+
+    def merge_balances(self, incoming_balances):
+        for account, balance in incoming_balances.items():
+            if account in self.balances:
+                # Update balance to the latest value from peers
+                self.balances[account] = max(self.balances[account], balance)
+            else:
+                self.balances[account] = balance
+        self.log("Balances Merged", f"Updated Balances: {self.balances}")
 
 
     def add_peer(self, peer_address):
@@ -320,6 +364,19 @@ class Node:
         }
         self.send_udp_message("details_response", details, peer_address)
 
+    def get_node_details(self):
+        details = f"Node Name: {self.nickname}\n"
+        details += f"Address: {self.address}\n"
+        details += "Balances:\n"
+        for account, balance in self.balances.items():
+            details += f"  {account} - {balance:.2f}\n"  # Address and balance
+
+        details += "Peers:\n"
+        for peer in self.peers:
+            details += f"  {peer}\n"  # List of peers
+
+        tk.messagebox.showinfo("Node Details", details)
+
     def handle_discovery_request(self, sender_address):
         self.add_peer(sender_address)
         response = {"peers": self.peers}
@@ -343,8 +400,14 @@ class Node:
             self.send_udp_message("discovery_request", {}, peer)
 
     def synchronize_transactions(self):
+        if not self.peers:
+            self.log("Sync", "No peers available for synchronization.")
+            return
+        # Send sync request to all peers
         for peer in self.peers:
             self.send_udp_message("sync_request", {}, peer)
+            self.log("Sync Request Sent", f"Sent sync request to {peer}")
+
 
     def join_network(self, peer_address):
         self.log("Join Network", f"Connecting to {peer_address}")
